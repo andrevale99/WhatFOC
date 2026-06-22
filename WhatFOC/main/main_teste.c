@@ -29,9 +29,9 @@ static const inversor_config_t inv_cfg = {
  * Parâmetros da senoide gerada por software
  * -------------------------------------------------------------------------- */
 
-#define SVPWM_MAGNITUDE   0.50f   /* raio do vetor [0, 0.577]       */
-#define SVPWM_FREQ_HZ     1.0f    /* frequência da fundamental (Hz)  */
-#define LOOP_PERIOD_MS    50      /* período do loop em ms           */
+#define SVPWM_MAGNITUDE 0.50f /* raio do vetor [0, 0.577]       */
+#define SVPWM_FREQ_HZ 1.0f    /* frequência da fundamental (Hz)  */
+#define LOOP_PERIOD_MS 5      /* período do loop em ms           */
 
 /* -------------------------------------------------------------------------- */
 
@@ -42,7 +42,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Gerando senoide: %.1f Hz, magnitude %.2f", SVPWM_FREQ_HZ, SVPWM_MAGNITUDE);
 
-    const float dt          = LOOP_PERIOD_MS / 1000.0f;          /* segundos por iteração   */
+    const float dt = LOOP_PERIOD_MS / 1000.0f;                  /* segundos por iteração   */
     const float delta_angle = 2.0f * M_PI * SVPWM_FREQ_HZ * dt; /* avanço de ângulo/iter   */
 
     float angle = 0.0f;
@@ -52,7 +52,7 @@ void app_main(void)
         /* Vetor girante em coordenadas αβ */
         svpwm_ab_t ab = {
             .alpha = SVPWM_MAGNITUDE * cosf(angle),
-            .beta  = SVPWM_MAGNITUDE * sinf(angle),
+            .beta = SVPWM_MAGNITUDE * sinf(angle),
         };
 
         svpwm_duty_t duty = {0};

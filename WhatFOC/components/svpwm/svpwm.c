@@ -35,86 +35,53 @@ static inline float clampf(float v, float lo, float hi)
 
 esp_err_t svpwm_calculate(const svpwm_ab_t *ab, svpwm_duty_t *duty)
 {
-
     if (ab == NULL || duty == NULL)
-    {
         return ESP_ERR_INVALID_ARG;
-    }
 
     const float alpha = ab->alpha;
     const float beta = ab->beta;
 
-    /* ------------------------------------------------------------------
-     *
-     * O plano αβ é dividido em 6 setores de 60°. Em vez de atan2(),
-     * usam-se três grandezas auxiliares cujo sinal identifica o setor:
-     *
-     *   v_reg1 =  β                          (fronteira S1/S6 e S3/S4)
-     *   v_reg2 = (√3·α − β) / 2             (fronteira S1/S2 e S4/S5)
-     *   v_reg3 = (−√3·α − β) / 2            (fronteira S2/S3 e S5/S6)
-     *
-     * Tabela de sinais:
-     *   Setor | v_reg1 | v_reg2 | v_reg3
-     *     1   |   +    |   −    |   −
-     *     2   |   +    |   +    |   (qualquer)
-     *     3   |   −    |   +    |   −
-     *     4   |   −    |   +    |   +
-     *     5   |   −    |   −    |   (qualquer)
-     *     6   |   +    |   −    |   +
-     * ------------------------------------------------------------------ */
     const float v_reg1 = beta;
     const float v_reg2 = (SQRT3 * alpha - beta) * 0.5f;
     const float v_reg3 = (-SQRT3 * alpha - beta) * 0.5f;
 
-    int sector = 0;
+    /*
+     * Tabela correta de sinais:
+     *  Setor | v_reg1 | v_reg2 | v_reg3 | Faixa
+     *    1   |   +    |   +    |   −    |   0–60°
+     *    2   |   +    |   −    |   −    |  60–120°
+     *    3   |   +    |   −    |   +    | 120–180°
+     *    4   |   −    |   −    |   +    | 180–240°
+     *    5   |   −    |   +    |   +    | 240–300°
+     *    6   |   −    |   +    |   −    | 300–360°
+     */
+    int sector;
 
     if (v_reg1 >= 0.0f)
     {
         if (v_reg2 >= 0.0f)
-        {
-            /* v_reg1 ≥ 0, v_reg2 ≥ 0 → setor 2 (v_reg3 irrelevante) */
-            sector = 2;
-        }
+            sector = 1; /* +, +, − */
         else if (v_reg3 >= 0.0f)
-        {
-            /* v_reg1 ≥ 0, v_reg2 < 0, v_reg3 ≥ 0 → setor 6 */
-            sector = 6;
-        }
+            sector = 3; /* +, −, + */
         else
-        {
-            /* v_reg1 ≥ 0, v_reg2 < 0, v_reg3 < 0 → setor 1 */
-            sector = 1;
-        }
+            sector = 2; /* +, −, − */
     }
-    else /* v_reg1 < 0 */
+    else
     {
-        if (v_reg2 >= 0.0f)
-        {
-            if (v_reg3 >= 0.0f)
-            {
-                /* v_reg1 < 0, v_reg2 ≥ 0, v_reg3 ≥ 0 → setor 4 */
-                sector = 4;
-            }
-            else
-            {
-                /* v_reg1 < 0, v_reg2 ≥ 0, v_reg3 < 0 → setor 3 */
-                sector = 3;
-            }
-        }
+        if (v_reg2 < 0.0f)
+            sector = 4; /* −, −, + */
+        else if (v_reg3 < 0.0f)
+            sector = 6; /* −, +, − */
         else
-        {
-            /* v_reg1 < 0, v_reg2 < 0 → setor 5 (v_reg3 irrelevante) */
-            sector = 5;
-        }
+            sector = 5; /* −, +, + */
     }
 
-    if (sector == 0)
-    {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    float Ta = 0.0f; /* Tempo do primeiro vetor ativo  */
-    float Tb = 0.0f; /* Tempo do segundo vetor ativo   */
+    /* ------------------------------------------------------------------
+     * Tempos dos vetores ativos (normalizados por Vdc e Ts)
+     * Ta = tempo do primeiro vetor ativo do setor
+     * Tb = tempo do segundo vetor ativo do setor
+     * ------------------------------------------------------------------ */
+    float Ta, Tb;
 
     switch (sector)
     {
@@ -145,49 +112,63 @@ esp_err_t svpwm_calculate(const svpwm_ab_t *ab, svpwm_duty_t *duty)
     default:
         return ESP_ERR_INVALID_ARG;
     }
-    float Tab = Ta + Tb;
 
+    /* Saturação (overmodulation) */
+    float Tab = Ta + Tb;
     if (Tab > 1.0f)
     {
-        Ta = Ta / Tab;
-        Tb = Tb / Tab;
+        Ta /= Tab;
+        Tb /= Tab;
         Tab = 1.0f;
     }
 
-    const float T0 = 1.0f - Tab;
-    const float t_half0 = T0 * 0.5f;
+    const float t0h = (1.0f - Tab) * 0.5f;
 
+    /* ------------------------------------------------------------------
+     * Duty cycles — derivados da sequência de chaveamento simétrica.
+     * A fase que entra primeiro nos vetores ativos acumula Ta+Tb;
+     * a que entra segundo acumula só Tb; a que fica nos vetores nulos
+     * acumula apenas t0h.
+     *
+     * Sequências (000→Va→Vb→111→Vb→Va→000):
+     *  S1: 000→100→110→111  U primeiro, V segundo, W nunca
+     *  S2: 000→110→010→111  V primeiro, U segundo, W nunca  ← Ta↔Tb trocado vs S1
+     *  S3: 000→010→011→111  V primeiro, W segundo, U nunca
+     *  S4: 000→011→001→111  W primeiro, V segundo, U nunca
+     *  S5: 000→001→101→111  W primeiro, U segundo, V nunca
+     *  S6: 000→101→100→111  U primeiro, W segundo, V nunca
+     * ------------------------------------------------------------------ */
     switch (sector)
     {
     case 1:
-        duty->u = t_half0;
-        duty->v = duty->u + Ta;
-        duty->w = duty->v + Tb;
+        duty->u = t0h + Ta + Tb;
+        duty->v = t0h + Tb;
+        duty->w = t0h;
         break;
     case 2:
-        duty->v = t_half0;
-        duty->u = duty->v + Tb;
-        duty->w = duty->u + Ta;
+        duty->u = t0h + Ta;
+        duty->v = t0h + Ta + Tb;
+        duty->w = t0h;
         break;
     case 3:
-        duty->v = t_half0;
-        duty->w = duty->v + Ta;
-        duty->u = duty->w + Tb;
+        duty->u = t0h;
+        duty->v = t0h + Ta + Tb;
+        duty->w = t0h + Tb;
         break;
     case 4:
-        duty->w = t_half0;
-        duty->v = duty->w + Tb;
-        duty->u = duty->v + Ta;
+        duty->u = t0h;
+        duty->v = t0h + Ta;
+        duty->w = t0h + Ta + Tb;
         break;
     case 5:
-        duty->w = t_half0;
-        duty->u = duty->w + Ta;
-        duty->v = duty->u + Tb;
+        duty->u = t0h + Tb;
+        duty->v = t0h;
+        duty->w = t0h + Ta + Tb;
         break;
     case 6:
-        duty->u = t_half0;
-        duty->w = duty->u + Tb;
-        duty->v = duty->w + Ta;
+        duty->u = t0h + Ta + Tb;
+        duty->v = t0h;
+        duty->w = t0h + Ta;
         break;
     }
 
