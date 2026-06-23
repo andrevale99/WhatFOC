@@ -31,19 +31,17 @@
  * O timer MCPWM em modo up-down conta até este valor e volta.
  */
 #define INVERSOR_TIMER_PERIOD_TICKS \
-    (INVERSOR_TIMER_RESOLUTION_HZ / INVERSOR_PWM_FREQ_HZ / 2)
+    (INVERSOR_TIMER_RESOLUTION_HZ / INVERSOR_PWM_FREQ_HZ)
 
-/**
- * No modo UP-DOWN, o timer conta até a METADE do período total e depois desce.
- * Este é o valor de pico (e o máximo permitido no comparador).
- */
-#define INVERSOR_TIMER_PEAK_TICKS \
+/* Valor máximo do comparador = period_ticks / 2 */
+#define INVERSOR_COMPARATOR_MAX \
     (INVERSOR_TIMER_PERIOD_TICKS / 2)
+
 /**
  * Dead-time em nanosegundos — tempo mínimo entre desligar um lado
  * e ligar o oposto do half-bridge para evitar shoot-through.
  */
-#define INVERSOR_DEAD_TIME_NS 150U /* 500 ns */
+#define INVERSOR_DEAD_TIME_NS 50U /* 150 ns */
 
 /* -----------------------------------------------------------------------
  * Contexto interno (singleton)
@@ -83,32 +81,16 @@ static inline float clampf(float v, float lo, float hi)
 /**
  * @brief Converte duty cycle normalizado [0,1] em ticks do comparador.
  *
- * Aplica um teto seguro (PERIOD - 2) para evitar falhas críticas do validador
+ * Aplica um teto seguro para evitar falhas críticas do validador
  * do driver MCPWM no modo UP_DOWN ao aproximar-se de 100%.
  */
-// static inline uint32_t duty_to_ticks(float duty)
-// {
-//     duty = clampf(duty, 0.0f, 1.0f);
-
-//     // Deixa uma margem de segurança física para evitar erros de range no hardware
-//     uint32_t max_safe_ticks = INVERSOR_TIMER_PERIOD_TICKS - 2;
-
-//     return (uint32_t)(duty * max_safe_ticks);
-// }
-
 static inline uint32_t duty_to_ticks(float duty)
 {
-    
     duty = clampf(duty, 0.0f, 1.0f);
 
-    uint32_t min_safe_ticks = 0;
+    const uint32_t max_ticks = INVERSOR_COMPARATOR_MAX - 1;
 
-    uint32_t max_safe_ticks = INVERSOR_TIMER_PEAK_TICKS - min_safe_ticks;
-
-
-    uint32_t safe_range = max_safe_ticks - min_safe_ticks;
-
-    return min_safe_ticks + (uint32_t)(duty * safe_range);
+    return (uint32_t)(duty * (float)max_ticks);
 }
 /* -------------------------- API pública ---------------------------------
  * ----------------------------------------------------------------------- */
@@ -297,7 +279,7 @@ esp_err_t inversor_set_duty(float duty_u, float duty_v, float duty_w)
         mcpwm_comparator_set_compare_value(s_ctx.comparators[2], ticks_w),
         TAG, "Falha ao setar duty W");
 
-    ESP_LOGI(TAG, "Duty cycles atualizados: U=%.3f V=%.3f W=%.3f", duty_u, duty_v, duty_w);
+    // ESP_LOGI(TAG, "Duty cycles atualizados: U=%.3f V=%.3f W=%.3f", duty_u, duty_v, duty_w);
 
     return ESP_OK;
 }
